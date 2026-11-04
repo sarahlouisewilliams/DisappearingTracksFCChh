@@ -36,6 +36,36 @@ def circle_fit(xy):
     return fit.x, fit.fun
 
 
+def sagitta_diagnostic(positions_mm, truth_pt_gev, bz_t):
+    """Independent transverse chord/sagitta check, without a circle fit.
+
+    Assumes outward-going, non-looping tracks. The signed sagitta is the
+    perpendicular distance at the hit nearest the transverse chord midpoint;
+    max_abs_sagitta_mm uses all intermediate hits and is less directly
+    comparable with the ideal midpoint prediction.
+    """
+    hits = positions_mm[np.argsort(np.linalg.norm(positions_mm[:, :2], axis=1))]
+    xy = hits[:, :2]
+    chord = xy[-1] - xy[0]
+    length = float(np.linalg.norm(chord))
+    if length <= 0 or len(xy) < 3:
+        raise ValueError("Need at least 3 distinct transverse hit positions")
+    unit = chord / length
+    relative = xy - xy[0]
+    projection = relative @ unit
+    signed = unit[0] * relative[:, 1] - unit[1] * relative[:, 0]
+    # Choose the interior hit nearest the halfway point of the chord.
+    mid_idx = 1 + int(np.argmin(np.abs(projection[1:-1] - length / 2)))
+    # Expected midpoint sagitta for uniform B and a circular arc; small-angle.
+    expected = (length * length * 0.000299792458 * abs(bz_t)
+                / (8.0 * truth_pt_gev)) if truth_pt_gev > 0 else math.nan
+    return dict(chord_length_mm=length,
+                sagitta_mid_mm=float(signed[mid_idx]),
+                sagitta_mid_fraction=float(projection[mid_idx] / length),
+                max_abs_sagitta_mm=float(np.max(np.abs(signed[1:-1]))),
+                expected_sagitta_mm=expected)
+
+
 def fit_helix(positions_mm, bz_t, sigma_rphi_mm, sigma_z_mm):
     # Sort by radial distance: valid for outward-going, non-looping trajectories.
     hits = positions_mm[np.argsort(np.linalg.norm(positions_mm[:, :2], axis=1))]
@@ -74,7 +104,9 @@ def main():
     fields = ['event', 'chargino_g4_id', 'pdg', 'truth_pt_gev', 'truth_p_gev',
               'n_hits', 'fit_status', 'fitted_radius_mm', 'fitted_pt_gev',
               'fitted_p_gev', 'slope_dz_ds', 'chi2', 'ndof', 'chi2_ndof',
-              'first_hit_r_mm', 'last_hit_r_mm']
+              'first_hit_r_mm', 'last_hit_r_mm',
+              'chord_length_mm', 'sagitta_mid_mm', 'sagitta_mid_fraction',
+              'max_abs_sagitta_mm', 'expected_sagitta_mm']
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     counts = {}
@@ -101,7 +133,10 @@ def main():
                 row['fit_status'] = 'too_few_hits'
             else:
                 try:
-                    row.update(fit_helix(np.array(hits), args.bz_tesla,
+                    positions = np.array(hits)
+                    row.update(sagitta_diagnostic(positions, row['truth_pt_gev'],
+                                                  args.bz_tesla))
+                    row.update(fit_helix(positions, args.bz_tesla,
                                          args.sigma_rphi_mm, args.sigma_z_mm))
                     row['fit_status'] = 'ok'
                 except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:

@@ -1,10 +1,17 @@
 # FCC-hh disappearing-chargino simulation tutorial
 
-This tutorial generates individual charginos, simulates their decays in the FCC-hh detector with Geant4, persists particle history and tracker hits, and studies **truth-level** layer acceptance. **Track reconstruction is not yet included.**
+This repository is a staged tutorial for generating individual charged winos/charginos, propagating them through an FCC-hh detector with Geant4, inspecting their tracker hits and decay products, and evaluating *truth-assisted* track fitting. It is **not** yet a realistic disappearing-track reconstruction or physics-sensitivity analysis.
+
+The tutorial has two parts:
+
+1. **Part 1 — Generation, full simulation and truth-hit acceptance.** Configure a chargino particle gun and custom Geant4 physics list; save particle history and tracker hits; identify which hits came from the chargino rather than its decay products; study hit/layer acceptance versus decay radius.
+2. **Part 2 — Truth-assisted tracking.** First validate the 6 T magnetic field and the helix fit using **stable charginos**. Only after that control sample works, generate **decaying charginos** and measure fit efficiency and momentum performance versus decay radius and hit multiplicity.
+
+> **Important correction to earlier versions:** the FCC-hh solenoid geometry does not by itself guarantee that Geant4 propagates particles in a magnetic field. The simulation steering must attach a correctly configured `SimG4ConstantMagneticFieldTool` to `SimG4Svc`. 
 
 ## Environment and dependencies
 
-The working configuration used Key4hep `2026-04-08`, Gaudi 40.2, ROOT 6.38.04, k4SimGeant4 0.1.0pre17, and FCC-hh v3.03 geometry. The custom `SimG4CharginoFtfpBert` component must be built and discoverable by Gaudi. `FCCDETECTORS` must point to the detector installation. Python analysis needs `podio`; the efficiency script also needs PyROOT, NumPy, pandas and matplotlib.
+The tested environment was Key4hep `2026-04-08` (Gaudi 40.2, ROOT 6.38.04, k4SimGeant4 0.1.0pre17), with FCC-hh v3.03 geometry. The custom `SimG4CharginoFtfpBert` Gaudi component must be built and discoverable. The `FCCDETECTORS` environment variable must point to the detector installation. Python post-processing requires `podio`, NumPy, SciPy, pandas and matplotlib; the original DD4hep-based layer-acceptance script also uses PyROOT/DD4hep.
 
 ## Quick reference: script inputs and outputs
 
@@ -25,340 +32,271 @@ Paths in the examples are relative to the repository root. The simulation output
 | `scripts/analyse_chargino_efficiency.py` | One simulation `.root`; DD4hep geometry | Event CSV, efficiency CSV, scatter plot PDF/PNG, efficiency plot PDF/PNG |
 | `scripts/run_lifetime_scan.sh` | Updated steering file, lifetime list and run settings; detector and compiled component | One `.root` and one `.log` per lifetime, in `samples/lifetime_scan/` and `logs/lifetime_scan/` |
 
-### How the files flow through the tutorial
+## 1. Part 1 — Chargino generation and Geant4 simulation
+
+### 1.1 Physics model
+
+`MomentumRangeParticleGun` generates one charged particle per event, with PDG ID `1000024` (positive chargino) or `-1000024` (negative chargino). The generated particles are passed through `GenAlg` and `HepMCToEDMConverter` into `GenParticles`.
+
+`SimG4CharginoFtfpBert` extends `FTFP_BERT` with a neutralino and charged charginos. The simplified unstable mode includes
 
 ```text
-run_chargino_fcchh_updated.py
-  + detector_fcc_hh_fixed_disTrack.py
-  + compiled SimG4CharginoFtfpBert component
-                  |
-                  v
-       chargino_decay_truth_SIM.root
-                  |
-        +---------+--------------------+
-        |                              |
-        v                              v
- inspection / validation     analyse_chargino_efficiency.py
- (terminal output)                     |
-                         +-------------+-------------+
-                         |                           |
-                         v                           v
-                 *_events.csv                 *_efficiency.csv
-                         +                           +
-                    scatter PDF/PNG            efficiency PDF/PNG
+chi+ -> chi0 + pi+
+chi- -> chi0 + pi-
 ```
 
-### Example commands and file naming
+with the proper lifetime specified by `CHARGINO_LIFETIME_NS`. `STABLE_CHARGINO=True` disables chargino decay but retains charged-particle transportation, multiple scattering and ionisation. This is a simplified single-particle signal model, not a full FCC-hh production simulation.
 
-Run a single simulation (writes the specified ROOT file):
+The recommended steering supports:
 
-```bash
-N_EVENTS=10000 CHARGINO_LIFETIME_NS=1.0 \
-OUTPUT=samples/chargino_tau1ns_SIM.root \
-k4run options/run_chargino_fcchh_updated.py
-```
-
-Create `samples/` first if necessary. Inspect the output:
-
-```bash
-podio-dump samples/chargino_tau1ns_SIM.root
-python scripts/inspect_particle_history.py samples/chargino_tau1ns_SIM.root
-python scripts/inspect_tracker_truth.py samples/chargino_tau1ns_SIM.root
-```
-
-Produce the efficiency products:
-
-```bash
-mkdir -p results
-python scripts/analyse_chargino_efficiency.py \
-  samples/chargino_tau1ns_SIM.root \
-  --output results/chargino_tau1ns
-```
-
-The last command writes exactly these six files:
-
-```text
-results/chargino_tau1ns_events.csv
-results/chargino_tau1ns_efficiency.csv
-results/chargino_tau1ns_layers_vs_decay_radius.pdf
-results/chargino_tau1ns_layers_vs_decay_radius.png
-results/chargino_tau1ns_efficiency_vs_decay_radius.pdf
-results/chargino_tau1ns_efficiency_vs_decay_radius.png
-```
-
-The current analysis accepts **one simulation ROOT file per invocation**. The lifetime scan generates separate samples, which can be analysed individually; automated multi-file combination is not implemented yet.
-
-## Simulation files
-
-### `options/run_chargino_fcchh.py`
-
-The original working Gaudi steering file. It configures the `MomentumRangeParticleGun` (PDG codes `1000024` and `-1000024`), HepMC-to-EDM4hep conversion, the custom Geant4 physics list, the simulation algorithm and EDM4hep output. The supplied configuration generates 1,000 events at 1,000 GeV, with polar angle 1.50–1.64 radians, neutralino mass 3,000 GeV, mass splitting 0.165 GeV and chargino proper lifetime 0.2 ns.
-
-### `options/run_chargino_fcchh_updated.py`
-
-The updated steering file preserves the simulation and particle-history configuration but reads its settings from environment variables:
-
-| Environment variable | Default | Purpose |
-|---|---|---|
-| `N_EVENTS` | `1000` | Number of events |
-| `OUTPUT` | `chargino_decay_truth_SIM.root` | Output file |
+| Environment variable | Default | Meaning |
+|---|---:|---|
+| `N_EVENTS` | `1000` | Generated events |
+| `OUTPUT` | `chargino_decay_truth_SIM.root` | Output EDM4hep ROOT file |
 | `NEUTRALINO_MASS_GEV` | `3000.0` | Neutralino mass |
-| `MASS_SPLITTING_GEV` | `0.165` | Chargino–neutralino mass difference |
-| `CHARGINO_LIFETIME_NS` | `0.2` | Proper lifetime |
-| `STABLE_CHARGINO` | `False` | Turn off decay for a stable control sample |
-| `MOMENTUM_MIN_GEV` | `1000.0` | Minimum gun momentum |
-| `MOMENTUM_MAX_GEV` | `1000.0` | Maximum gun momentum |
-| `THETA_MIN` | `1.50` | Minimum polar angle (radians) |
-| `THETA_MAX` | `1.64` | Maximum polar angle (radians) |
+| `MASS_SPLITTING_GEV` | `0.165` | Chargino minus neutralino mass |
+| `CHARGINO_LIFETIME_NS` | `0.2` | Chargino proper lifetime when unstable |
+| `STABLE_CHARGINO` | `False` | Disable decay for a control sample |
+| `MOMENTUM_MIN_GEV` | `1000.0` | Minimum generated momentum magnitude |
+| `MOMENTUM_MAX_GEV` | `1000.0` | Maximum generated momentum magnitude |
+| `THETA_MIN` | `1.50` | Minimum polar angle, radians |
+| `THETA_MAX` | `1.64` | Maximum polar angle, radians |
 
-Example:
+The gun sets **total momentum** to 1 TeV; the transverse momentum is close to 1 TeV because the polar-angle range is near the transverse plane.
 
-```bash
-N_EVENTS=10000 CHARGINO_LIFETIME_NS=1.0 \
-MOMENTUM_MIN_GEV=1000 MOMENTUM_MAX_GEV=1000 \
-OUTPUT=chargino_tau1ns_SIM.root \
-k4run options/run_chargino_fcchh_updated.py
-```
+### 1.2 Required magnetic-field configuration — applies to BOTH stable and decaying samples
 
-**Critical configuration detail:** `geantservice.physicslist = physics` and `geantservice.actions = actions` pass the *configured instances*, not tool-name strings. `SimG4FullSimActions` has `enableHistory=True` and `energyCut=0.0`. The particle-history output saver is already included in the detector configuration; do not add a second saver writing `SimParticleSecondaries`.
-
-### `options/detector_fcc_hh_fixed_disTrack.py`
-
-Local FCC-hh detector configuration imported by the steering file. It defines the simulation's detector and hit output tools. Barrel and endcap hit savers have different Gaudi names (`saveTrackerBarrelHits` and `saveTrackerEndcapHits`) to avoid a duplicate-tool collision. A single `SimG4SaveParticleHistory` saver persists `SimParticleSecondaries`. Keep this file in the `options/` directory alongside the steering file.
-
-### `src/SimG4CharginoFtfpBert.cpp`
-
-Custom FTFP_BERT-based physics-list component. It defines the neutralino and chargino masses, chargino lifetime, charged-particle multiple scattering and ionisation, and the simplified two-body decays `chi+ -> chi0 pi+` and `chi- -> chi0 pi-`. The `StableChargino` property disables decay for geometry tests. This is a simplified signal model, not a full decay model.
-
-## Output collections
-
-- `GenParticles`: generated input particles.
-- `SimParticleSecondaries`: Geant4 particle history, including the chargino and its decay products.
-- `TrackerBarrelReadout`: simulated barrel tracker hits.
-- `TrackerEndcapReadout`: simulated endcap tracker hits.
-
-In this k4SimGeant4 version, the particle-history code stores the **Geant4 track ID** in `MCParticle.simulatorStatus`. The tracker-hit saver stores the **same track ID** in `SimTrackerHit.quality` as a documented workaround. It does **not** populate `SimTrackerHit.particle`. Match hits using `hit.getQuality() == particle.getSimulatorStatus()`; do not dereference `hit.getParticle()`.
-
-## Inspection and validation scripts
-
-### `scripts/inspect_file.py`
-
-General EDM4hep output inspector: check collection presence and event contents before interpreting the physics. Exact command-line options depend on your existing script. `podio-dump file.root` is a useful independent collection-level check.
-
-### `scripts/summarise_tracker_hits.py`
-
-Counts hits in each tracker readout and events with hits. Useful for confirming the simulation and comparing stable/decaying runs. **These are all-particle counts**, including pions and detector secondaries, so they are not chargino efficiency measurements.
-
-### `scripts/summarise_hit_radii.py`
-
-Examines transverse hit radius `sqrt(x*x + y*y)` to understand detector coverage and diagnose unexpected hit distributions. Without truth filtering, it includes hits from all charged particles.
-
-### `scripts/summarise_tracker_layers.py`
-
-Uses DD4hep readout decoders to translate `cellID` to barrel `system/layer` or endcap `system/posneg/disc`, then counts distinct layers with hits. Earlier event-level layer counts mixed chargino and secondary hits and therefore cannot establish chargino survival.
-
-### `scripts/inspect_particle_history.py`
-
-Reads `SimParticleSecondaries` with the current podio API:
+In `options/run_chargino_fcchh_updated.py`, add the import and **one** field instance:
 
 ```python
-from podio import root_io
-reader = root_io.Reader(filename)
-for event in reader.get("events"):
-    particles = event.get("SimParticleSecondaries")
+from Configurables import SimG4ConstantMagneticFieldTool
+from GaudiKernel import SystemOfUnits as units
+
+field = SimG4ConstantMagneticFieldTool("CharginoField")
+field.FieldOn = True
+field.FieldComponentX = 0.0 * units.tesla
+field.FieldComponentY = 0.0 * units.tesla
+field.FieldComponentZ = 6.0 * units.tesla
+field.IntegratorStepper = "G4ExactHelixStepper"
 ```
 
-Prints particle PDG, Geant4 track ID, momentum and vertex. For the single-chargino gun, the neutralino and charged pion have the same production vertex, which identifies the chargino decay position. Parent/daughter relationships are not yet populated in this history collection.
+Then attach **that same configured instance** to the Geant4 service:
 
-### `scripts/inspect_tracker_truth.py`
+```python
+geantservice = SimG4Svc("SimG4Svc")
+geantservice.detector = "SimG4DD4hepDetector"
+geantservice.magneticField = field
+geantservice.physicslist = physics
 
-Builds a dictionary from Geant4 track ID to `MCParticle` and labels tracker hits via `hit.getQuality()`. This distinguishes genuine chargino hits from pion/muon/other secondary hits. In a validated event, the chargino (G4 track 1) decayed at about 0.031 mm and made **no** tracker hits; the pion (track 2) and a secondary muon (track 36) accounted for all 12 barrel hits.
+# Retain the existing history/actions configuration.
+actions = SimG4FullSimActions("FullSimActions")
+actions.enableHistory = True
+actions.energyCut = 0.0
+geantservice.actions = actions
+app.ExtSvc += [geantservice]
+```
 
-## Truth-level efficiency analysis
+**Delete any later block resembling:**
 
-### `scripts/analyse_chargino_efficiency.py`
+```python
+# WRONG: replaces the configured field with an unconfigured tool
+field = SimG4ConstantMagneticFieldTool("MagneticField")
+geantservice.magneticField = field
+```
 
-The analysis script previously provided in this tutorial performs these operations:
+This exact overwrite caused the original stable-chargino sample to have nearly straight tracks and wildly overestimated fitted momentum. In the corrected sample, the measured sagitta agrees with the 6 T expectation. A constant 6 T field is a *controlled tutorial approximation*, not a verified full FCC-hh field map. The `FieldRMax` and `FieldZMax` properties need not be set for the validated configuration.
 
-1. Load the FCC-hh DD4hep geometry and tracker readout decoders.
-2. Find the unique chargino (`abs(PDG)==1000024`) in each event.
-3. Locate the decay using the common vertex of the unique neutralino and appropriately charged pion.
-4. Select only tracker hits with `quality == chargino.simulatorStatus`.
-5. Decode hit layer IDs, count distinct chargino-hit layers, and record first/last hit radii.
-6. Write event-level CSV and two plots.
-
-Run:
+**Check the steering before running:**
 
 ```bash
-python scripts/analyse_chargino_efficiency.py \
-  chargino_decay_truth_SIM.root --output chargino_decay
+grep -n -E 'SimG4ConstantMagneticFieldTool|magneticField|FieldOn|FieldComponent' \
+  options/run_chargino_fcchh_updated.py
 ```
 
-Outputs:
+There should be one field-tool instantiation and one assignment to `geantservice.magneticField`.
+
+### 1.3 Output collections and truth association
+
+The output contains `GenParticles`, `SimParticleSecondaries`, `TrackerBarrelReadout`, and `TrackerEndcapReadout`. The local `detector_fcc_hh_fixed_disTrack.py` sets up the tracker hit savers and a single particle-history saver; do not add a duplicate `SimG4SaveParticleHistory` tool.
+
+In the tutorial's current k4SimGeant4 configuration, `MCParticle.simulatorStatus` holds the Geant4 track ID and `SimTrackerHit.quality` holds the same ID. Associate chargino hits using:
+
+```python
+chargino_g4_id = chargino.getSimulatorStatus()
+chargino_hits = [h for h in hits if h.getQuality() == chargino_g4_id]
+```
+
+Do **not** assume `SimTrackerHit.particle` is populated in these outputs. Do not count all tracker hits as chargino hits: charged pions and secondary particles can leave hits after the chargino disappears.
+
+### 1.4 Initial decaying-sample inspection and truth-hit acceptance
+
+```bash
+mkdir -p samples results
+STABLE_CHARGINO=False CHARGINO_LIFETIME_NS=1.0 N_EVENTS=10000 \
+  OUTPUT=samples/chargino_tau1ns_6T_SIM.root \
+  k4run options/run_chargino_fcchh_updated.py
+
+podio-dump samples/chargino_tau1ns_6T_SIM.root
+python scripts/inspect_particle_history.py samples/chargino_tau1ns_6T_SIM.root
+python scripts/inspect_tracker_truth.py samples/chargino_tau1ns_6T_SIM.root
+
+python scripts/analyse_chargino_efficiency.py \
+  samples/chargino_tau1ns_6T_SIM.root --output results/chargino_tau1ns
+```
+
+The acceptance analysis counts **truth-associated chargino layers** and produces `*_events.csv`, `*_efficiency.csv`, `*_layers_vs_decay_radius.{png,pdf}` and `*_efficiency_vs_decay_radius.{png,pdf}`. This measures layer acceptance, not track reconstruction. The decay location is inferred from the common production vertex of the neutralino and same-sign pion, since the saved history does not reliably populate parent/daughter links. The original script assumes one chargino and the corresponding decay products per event.
+
+## 2. Part 2 — Truth-assisted tracking and disappearing tracks
+
+**Workflow:** (A) generate a stable control sample -> (B) validate magnetic bending and momentum fit -> (C) generate decaying samples -> (D) evaluate fit efficiency and resolution versus decay radius/hit multiplicity.
+
+The tracking scripts fit truth-associated **Geant4 hit positions**, not reconstructed digitised hits. The xy trajectory is fitted to a circle, then z is fitted versus transverse arc length. With a uniform solenoidal field:
+
+\[
+p_T\,[\mathrm{GeV}] = 0.000299792458\,|B_z\,[\mathrm{T}]|\,R\,[\mathrm{mm}].
+\]
+
+The default fit threshold is **four chargino hits**. This is an algorithmic requirement for this diagnostic, not a detector-quality disappearing-track definition.
+
+### 2.1 Stage 2A — Generate a **stable** chargino control sample
+
+Always validate stable particles before attempting a lifetime scan. Stable mode is controlled by `STABLE_CHARGINO=True`; the lifetime setting is irrelevant while decay is disabled.
+
+```bash
+mkdir -p samples results
+STABLE_CHARGINO=True N_EVENTS=1000 \
+  MOMENTUM_MIN_GEV=1000 MOMENTUM_MAX_GEV=1000 \
+  OUTPUT=samples/chargino_stable_6T_SIM.root \
+  k4run options/run_chargino_fcchh_updated.py
+```
+
+This generates 1 TeV-momentum positive and negative charginos, near the transverse plane, and propagates them through the tracker **without decay**. The stable sample isolates magnetic bending and fit behaviour from loss of hits due to decay.
+
+### 2.2 Stage 2B — Validate sagitta and fitted momentum
+
+Use the stable-fit script **with the sagitta diagnostic** (the `truth_assisted_tracking.py` from the sagitta-enabled Stage 2 package):
+
+```bash
+python scripts/truth_assisted_tracking.py \
+  samples/chargino_stable_6T_SIM.root \
+  --bz-tesla 6.0 \
+  --output results/stable_6T_truth_fit.csv
+
+python scripts/plot_truth_assisted_tracking.py \
+  results/stable_6T_truth_fit.csv \
+  --output-prefix results/stable_6T
+```
+
+For a 1 TeV transverse momentum in 6 T, the expected curvature radius is approximately
+
+\[
+R \simeq \frac{1000}{0.000299792458\times6}
+  \simeq 5.56\times10^5\ \mathrm{mm}.
+\]
+
+For the observed ~1.49 m transverse chord, the expected sagitta is about 0.50 mm. The sagitta diagnostic is independent of the circle fit and is therefore the first test of whether the simulated trajectories actually bend.
+
+**Observed validation results (100-event corrected-field sample):**
+
+| Quantity | Result |
+|---|---:|
+| Mean maximum absolute sagitta | 0.499484 mm |
+| Mean expected sagitta | 0.501422 mm |
+| Mean generated transverse momentum | 999.128 GeV |
+| Mean fitted transverse momentum | 1001.971 GeV |
+| Mean fitted radius | 557,036 mm |
+| Mean relative momentum residual | +0.2846% |
+| Standard deviation of relative momentum residual | 0.5875% |
+| Median number of hits (earlier 1000-event stable sample) | 12 |
+
+The mean signed sagitta can be close to zero because positive and negative charginos bend in opposite directions. Inspect absolute sagitta or separate the two charges.
+
+**Known limitation:** the small +0.28% residual bias is documented but not corrected. Do not extrapolate the ~0.59% truth-assisted residual width to a realistic FCC-hh detector tracking resolution. A very small `chi2_ndof` does not validate detector hit uncertainties, because the script uses nominal effective hit errors without full digitisation.
+
+**Failure mode discovered during development:** before the duplicate field tool was removed, the maximum sagitta was only ~0.003 mm (rather than ~0.5 mm) and the median fitted momentum was ~130 TeV. If this happens again, check the `SimG4Svc.magneticField` assignment before debugging the circle fitter.
+
+### 2.3 Stage 2C — Generate **decaying** charginos
+
+Only proceed once the stable sample passes the sagitta and momentum checks. Set `STABLE_CHARGINO=False` and specify a nonzero proper lifetime. A useful first sample is 5 ns:
+
+```bash
+STABLE_CHARGINO=False CHARGINO_LIFETIME_NS=5.0 N_EVENTS=10000 \
+  MOMENTUM_MIN_GEV=1000 MOMENTUM_MAX_GEV=1000 \
+  OUTPUT=samples/chargino_decay_tau5ns_6T_SIM.root \
+  k4run options/run_chargino_fcchh_updated.py
+```
+
+For a ~3 TeV chargino with 1 TeV momentum, `beta*gamma ≈ 1/3`, so the mean laboratory flight distance is approximately `100 mm × lifetime[ns]`. At 5 ns this is ~500 mm. A 0.2 ns sample has mean flight distance ~20 mm and is therefore expected to contain many zero-hit charginos. The **transverse** decay radius is not identical to the 3D flight distance, though they are close for the near-transverse gun used here.
+
+The decay produces a neutralino and charged pion. **Only hits belonging to the original chargino** should enter its track fit; pion hits must be excluded even when the pion continues through the tracker.
+
+### 2.4 Stage 2D — Fit decaying tracks and measure efficiency
+
+```bash
+python scripts/truth_assisted_tracking_decays.py \
+  samples/chargino_decay_tau5ns_6T_SIM.root \
+  --bz-tesla 6.0 \
+  --output results/decay_tau5ns_fit.csv
+
+python scripts/plot_decaying_chargino_tracking.py \
+  results/decay_tau5ns_fit.csv \
+  --output-prefix results/decay_tau5ns
+```
+
+The decaying-fit script writes one row per event with a uniquely identified chargino, **including zero-hit and too-few-hit events**. Fields include `decay_r_mm`, `decay_status`, `n_hits`, `fit_status`, `fitted_pt_gev`, `truth_pt_gev`, `first_hit_r_mm`, `last_hit_r_mm`, and the sagitta diagnostics where enough hits exist. Missing or ambiguous decay-product matches are flagged rather than assigned an artificial decay radius of zero.
+
+The plotting script produces:
 
 | Output | Interpretation |
 |---|---|
-| `chargino_decay_events.csv` | One row per accepted event: chargino momentum, pT, eta, decay vertex/radius, hits and distinct layers |
-| `chargino_decay_layers_vs_decay_radius.pdf` / `.png` | Scatter: each chargino's number of hit layers versus its decay radius |
-| `chargino_decay_efficiency_vs_decay_radius.pdf` / `.png` | Binned fraction satisfying `N_layers >= 1,...,6` versus decay radius |
-| `chargino_decay_efficiency.csv` | Bin boundaries, passing/total counts, efficiencies and approximate binomial errors |
+| `results/decay_tau5ns_efficiency.csv` | Counts and fit fraction by decay-radius bin |
+| `results/decay_tau5ns_efficiency.png` | Fit fraction versus transverse decay radius |
+| `results/decay_tau5ns_pt_residual_vs_radius.png` | Relative fitted-momentum residual versus decay radius |
+| `results/decay_tau5ns_pt_residual_vs_hits.png` | Relative fitted-momentum residual versus chargino hit count |
 
-The current plot uses 25 mm-wide radial bins. The errors are `sqrt(e*(1-e)/n)`, which can be misleading for sparse bins or efficiencies of 0 or 1; use proper binomial confidence intervals in a future update. The analysis assumes one chargino, one neutralino and one corresponding pion per event. It is not suitable without modification for realistic multi-particle signal events.
+For each decay-radius bin, the plotted quantity is
 
-**Physics interpretation:** these are **truth-hit / geometric acceptance** plots, not reconstructed-track efficiencies. Hits from the decay pion are explicitly excluded.
+\[
+\epsilon_{\mathrm{fit}}(r) =
+\frac{N(\text{unique chargino, matched decay, successful fit in bin})}
+     {N(\text{unique chargino, matched decay in bin})}.
+\]
 
-## Lifetime scan
+This is a **conditional truth-assisted fit fraction**, not an inclusive reconstruction efficiency. Events with unmatched/ambiguous decay vertices are excluded from the radius-binned denominator, and events lacking a uniquely identified chargino are not written to the CSV. The script defaults to plotting only bins with at least 10 denominator events. Momentum residual plots are necessarily conditional on a successful fit; they do not describe the failed short-track population.
 
-### `scripts/run_lifetime_scan.sh`
+### 2.5 Lifetime scan
 
-A proposed wrapper to run 10,000 events per lifetime for `0.05 0.1 0.2 0.5 1.0 2.0 5.0 10.0` ns. It keeps the momentum at 1,000 GeV and the polar angle in 1.50–1.64 radians, and writes separate ROOT outputs under `samples/lifetime_scan/` with logs under `logs/lifetime_scan/`.
+Once 5 ns is understood, repeat the same procedure for `0.2`, `1`, `2`, `5` and `10` ns. Keep geometry, field, particle masses, generated momentum and theta, hit matching, and fit settings unchanged. Use a distinct ROOT file and CSV for each lifetime; do not silently combine samples with different lifetime distributions.
 
-**Important:** if you use the previously supplied wrapper, change its `k4run` command to point at `options/run_chargino_fcchh_updated.py` rather than the original steering file; otherwise the environment-variable overrides will not be applied.
+The original `scripts/run_lifetime_scan.sh`, if present, may need updating to call `options/run_chargino_fcchh_updated.py` and to use the corrected 6 T steering. Check its contents before using it.
 
-```bash
-chmod +x scripts/run_lifetime_scan.sh
-./scripts/run_lifetime_scan.sh
-```
+## 3. How to interpret the results
 
-For a 3 TeV chargino with 1 TeV momentum, `beta*gamma` is approximately 1/3 and the mean lab flight distance is approximately `100 mm × tau[ns]`. The lifetime scan populates a wider range of decay radii; it is **not** a physical lifetime distribution to merge unweighted. For physics predictions, use an appropriate signal spectrum and lifetime weighting.
+| Quantity | What it establishes | What it does **not** establish |
+|---|---|---|
+| Truth-associated tracker hit count | Chargino's simulated hit coverage | Whether a tracking algorithm finds a track |
+| Number of distinct tracker layers | Layer acceptance before decay | Track quality after digitisation |
+| Sagitta vs expected sagitta | Magnetic bending and propagation consistency | Realistic momentum resolution |
+| Stable-sample fitted momentum | Sanity check of circle/helix fitter | Full reconstruction performance |
+| Fit fraction vs decay radius | Availability of enough ideal truth hits and successful numerical fits | Realistic disappearing-track efficiency |
+| Momentum residual vs hits | Lever-arm dependence among fitted truth tracks | Performance for failed tracks or fakes |
 
-## Tracker geometry and layer counting
+Future stages should introduce digitisation/hit smearing, realistic pattern recognition, track-quality criteria, material/field-map refinements, and eventually signal kinematics, pileup and backgrounds. A fully realistic tracking efficiency needs a carefully defined truth-reconstructable denominator and a reconstructed, truth-matched track numerator.
 
-For central tracks, observed barrel hit radii were approximately **25, 60, 102, 150, 264, 395, 529, 751, 931, 1136, 1321 and 1521 mm**. These are observed positions, **not a verified table of nominal layer radii**. Always use decoded `cellID` layer keys to distinguish layers; do not use radius alone as a layer identifier.
+## 4. Troubleshooting checklist
 
-## Suggested validation sequence
+- **Nearly straight stable tracks / fitted momentum ~100 TeV:** confirm only one configured field tool is attached to `SimG4Svc`; rerun **both** simulation and fit, and check file timestamps and input paths.
+- **No chargino hits but many tracker hits:** inspect Geant4 IDs; hits may belong to charged decay pions or other secondaries.
+- **Missing decay radius:** check the neutralino and same-sign pion in `SimParticleSecondaries`; the tutorial infers the vertex from their common production point.
+- **Few fitted decaying charginos:** inspect `n_hits` and `fit_status` before changing the fit; short-lived charginos may decay before reaching four layers/hits.
+- **Very large fitted momentum for short tracks:** a small sagitta and short lever arm make curvature numerically poorly constrained; check fit residuals versus hit count and decay radius.
+- **Inconsistent results after a code edit:** ensure the ROOT sample was regenerated using the new steering and the CSV was regenerated from that specific ROOT file.
 
-1. Generate a small stable sample and confirm tracker hits are present.
-2. Generate a decaying sample and confirm `SimParticleSecondaries` and tracker collections with `podio-dump`.
-3. Inspect the chargino, neutralino and pion with `inspect_particle_history.py`.
-4. Check hit truth labels with `inspect_tracker_truth.py`; verify pion hits are not counted as chargino hits.
-5. Run `analyse_chargino_efficiency.py` and inspect its CSV, particularly early-decay events with zero chargino layers.
-6. Only then run larger lifetime and kinematic scans.
+## 5. Recommended order for a new user
 
-## Planned next stages (not implemented yet)
-
-- Expand plots from thresholds 1–6 to all 12 barrel layers.
-- Determine exact nominal layer radii from the geometry XML.
-- Produce layer-survival maps and acceptance versus decay radius, pT and eta.
-- Add truth-assisted then realistic track finding and fitting; measure reconstruction efficiency relative to truth-reconstructable charginos.
-- Eventually include realistic wino/higgsino production, pileup, backgrounds and selection efficiencies.
-
-The eventual reconstruction efficiency is `N(reconstructed, truth-matched tracklets) / N(truth-reconstructable charginos)`, distinct from the truth-hit acceptance measured here.
-
----
-
-# Part 2 — Truth-assisted tracking studies (prototype)
-
-## Scope and status
-
-Part 1 above covers the existing **truth-level simulation and hit studies**. Part 2 introduces a **standalone diagnostic helix fitter** using the simulated hit positions and known Geant4 particle identity. This is a *first tracking study*, not a completed detector reconstruction. It does **not** yet implement realistic digitisation, a Kalman/GenFit fitter, material-aware propagation, a detector field map, EDM4hep `Track` output, or truth-independent pattern recognition.
-
-The implementation is intentionally separate from the working Gaudi simulation. It reads the existing `*_SIM.root` directly, so no changes to the custom physics list or detector configuration are needed.
-
-## New scripts: inputs and outputs
-
-| Script | Input | Output | Purpose |
-|---|---|---|---|
-| `scripts/truth_assisted_tracking.py` | `*_SIM.root` with `SimParticleSecondaries`, `TrackerBarrelReadout`, `TrackerEndcapReadout`; command-line B-field and resolution assumptions | `tracking_truth_fit.csv` (or `--output` filename) | Selects only chargino-associated Geant4 hits, fits an approximate 3D helix and compares with truth momentum |
-| `scripts/plot_truth_assisted_tracking.py` | CSV from the preceding script | `tracking_pt_residual_vs_hits.png/.pdf`, `tracking_chi2_ndof.png/.pdf` (prefix configurable) | Diagnostic residual and fit-quality plots |
-
-The updated simulation steering file, `options/run_chargino_fcchh_updated.py`, is included in this extension bundle. It still requires the **existing local** `options/detector_fcc_hh_fixed_disTrack.py` and compiled `SimG4CharginoFtfpBert` component. They are not included here, because the current versions were not supplied.
-
-## How the truth-assisted fitter works
-
-1. Read the EDM4hep event with `podio.root_io.Reader`.
-2. Find exactly one MC particle with `abs(PDG) == 1000024` in `SimParticleSecondaries`.
-3. Identify its Geant4 track ID from `MCParticle.getSimulatorStatus()`.
-4. Collect barrel and endcap `SimTrackerHit` positions where `hit.getQuality() == chargino_id`. **This association depends on your verified custom hit saver**; it is not a general EDM4hep convention.
-5. Sort hit positions by cylindrical radius, fit a transverse circle, and fit longitudinal position as a linear function of signed transverse arc length.
-6. Estimate transverse momentum from the fitted curvature using `pT[GeV] = 0.000299792458 * |Bz[T]| * R[mm]`.
-7. Write one CSV row per event, including the number of chargino hits, fit status, true/fitted momentum, fitted radius and approximate fit quality.
-
-The fit uses the original **simulated hit positions**, with user-supplied effective resolutions only to scale the residuals. It does **not smear or digitise** the hits. Its chi-squared is a diagnostic, not a statistically calibrated tracking fit.
-
-The method assumes an approximately uniform solenoidal `Bz`, outward-going non-looping trajectories, and a helix with negligible energy loss. It ignores material scattering and does not account for the full FCC-hh field map. In particular, high-momentum (~1 TeV) charginos have weak curvature, so circle fits can be poorly constrained, especially with only a few inner hits. Fit results must be treated as preliminary.
-
-## Running Part 2
-
-First produce a **stable-chargino** control sample with Part 1:
-
-```bash
-STABLE_CHARGINO=True N_EVENTS=1000 \
-OUTPUT=chargino_stable_SIM.root \
-k4run options/run_chargino_fcchh_updated.py
-```
-
-Then run the standalone fitter, supplying an **explicit Bz value appropriate to the detector region**. The example below uses `4.0 T` **only as an illustrative assumption**, not a verified FCC-hh detector value:
-
-```bash
-python scripts/truth_assisted_tracking.py \
-  chargino_stable_SIM.root \
-  --bz-tesla 4.0 \
-  --min-hits 4 \
-  --sigma-rphi-mm 0.01 \
-  --sigma-z-mm 0.05 \
-  --output results/stable_truth_fit.csv
-```
-
-Generate diagnostic plots:
-
-```bash
-python scripts/plot_truth_assisted_tracking.py \
-  results/stable_truth_fit.csv \
-  --output results/stable
-```
-
-Expected files:
-
-```text
-results/stable_truth_fit.csv
-results/stable_pt_residual_vs_hits.png
-results/stable_pt_residual_vs_hits.pdf
-results/stable_chi2_ndof.png
-results/stable_chi2_ndof.pdf
-```
-
-Repeat with a decaying sample:
-
-```bash
-STABLE_CHARGINO=False CHARGINO_LIFETIME_NS=0.2 \
-N_EVENTS=10000 OUTPUT=chargino_decay_SIM.root \
-k4run options/run_chargino_fcchh_updated.py
-
-python scripts/truth_assisted_tracking.py \
-  chargino_decay_SIM.root \
-  --bz-tesla 4.0 \
-  --output results/decay_truth_fit.csv
-```
-
-**Before interpreting fitted momenta**, replace the illustrative B-field value with a justified value or implement a field-map-aware propagator. The current script does not independently check the magnetic field in the geometry.
-
-## Output CSV columns
-
-- `event`, `chargino_g4_id`, `pdg`: event and chargino identity.
-- `truth_pt_gev`, `truth_p_gev`: generated/simulation-truth momentum.
-- `n_hits`: count of **chargino-associated** SimTrackerHits across barrel and endcap.
-- `fit_status`: `ok`, `too_few_hits` or `fit_failed`.
-- `fitted_radius_mm`, `fitted_pt_gev`, `fitted_p_gev`: fitted curvature and approximate momenta.
-- `slope_dz_ds`: longitudinal slope along signed transverse arc length.
-- `chi2`, `ndof`, `chi2_ndof`: approximate geometric-fit diagnostics.
-- `first_hit_r_mm`, `last_hit_r_mm`: smallest and largest cylindrical hit radii in the fit.
-
-A row with `too_few_hits` has blank fit fields; it is **not** a pattern-recognition failure. A truth-assisted fit can succeed even when a realistic track finder would fail.
-
-## Suggested validation sequence
-
-1. Run the stable 1 TeV central sample and check the `n_hits` distribution.
-2. Inspect individual fit residuals and extreme fitted momenta; test sensitivity to hit count and assumed B field.
-3. Run the decaying sample and compare fit success versus the number of **chargino** hits.
-4. Add true detector digitisation, including local measurement coordinates, pixel/strip resolutions, and measurement covariances.
-5. Replace the diagnostic circle/line fit with a proper GenFit/Kalman-style fit using the FCC-hh geometry, material and magnetic-field map.
-6. Add pattern recognition and evaluate matched-track efficiency and fake rates separately from truth-hit acceptance.
-
-## Dependencies
-
-Part 2 requires Python with `numpy`, `scipy`, `podio`, `pandas`, and `matplotlib` available in the same compatible Key4hep environment. No custom reconstruction Gaudi component is required for this first prototype.
-
-## Limitations and next milestone
-
-This prototype **does not produce** `*_DIGI.root` or `*_REC.root` and does not write `edm4hep::Track` collections. The next milestone is a detector-aware digitisation and fitted-track pipeline, after verifying the exact algorithms and components installed in your Key4hep release. The original FCC-hh detector and physics-list source are deliberately not replaced by guessed configurations.
+1. Build the custom chargino physics-list component and confirm the Key4hep/FCC-hh environment.
+2. Apply the **single 6 T field** fix to `run_chargino_fcchh_updated.py`.
+3. Generate a **stable** 1 TeV sample and verify ~0.5 mm sagitta and ~1 TeV fitted momentum.
+4. Generate a **5 ns decaying** sample, inspect particle history and confirm charged-pion hits are excluded.
+5. Produce truth-hit acceptance and truth-assisted fit-efficiency plots.
+6. Extend to a lifetime scan, then revisit numerical fit bias and realism only as needed.
